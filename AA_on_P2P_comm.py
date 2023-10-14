@@ -94,20 +94,6 @@ def mount_google_drive():
     drive.mount('/content/drive/', force_remount=True)
     sys.path.append('/content/drive/My Drive/Colab Notebooks/AttacksAndDefenseNew/DeepRobust-master/examples/graph')
 
-
-# Ensure to have a 'main' function to encapsulate script functionality
-if __name__ == "__main__":
-    install_pytorch_geometric_dependencies()
-    mount_google_drive()
-
-    # NOTE: The following import statements and functionalities need further explanations to be fully understood by others.
-    wg = reload(wg)  # Reloading: Explain why this is necessary.
-    FPLinQ = reload(FPLinQ)  # Reloading: Elaborate on purpose and impact.
-    helper_functions = reload(helper_functions)  # Reloading: Detail reasons and implications.
-
-    # Your main functionalities and script operations go here.
-    # Be sure to provide explanations and comment on blocks of codes for clarity.
-
 def high_rank_approximation(A, k):
     """
     High Rank Approximation (HRA) using Singular Value Decomposition.
@@ -425,3 +411,286 @@ def reshape_modified_adjacency(modified_adj):
         edge_index[0, i], edge_index[1, i] = one_locations[i][0], one_locations[i][1]
     
     return edge_index
+
+class IGConv(MessagePassing):
+    def __init__(self, mlp1, mlp2, **kwargs):
+        super(IGConv, self).__init__(aggr='max', **kwargs)
+        self.mlp1 = mlp1
+        self.mlp2 = mlp2
+        
+    def reset_parameters(self):
+        # Ensure your reset function is defined or use appropriate PyTorch functions
+        # reset(self.mlp1)
+        # reset(self.mlp2)
+
+    def update(self, aggr_out, x):
+        tmp = torch.cat([x, aggr_out], dim=1)
+        comb = self.mlp2(tmp)
+        return torch.cat([x[:, :1], comb], dim=1)
+
+    def forward(self, x, edge_index, edge_attr):
+        # Your handling of dimensions should be validated
+        x = x.unsqueeze(-1) if x.dim() == 1 else x
+        edge_attr = edge_attr.unsqueeze(-1) if edge_attr.dim() == 1 else edge_attr
+        return self.propagate(edge_index, x=x, edge_attr=edge_attr)
+    
+    def message(self, x_i, x_j, edge_attr):
+        tmp = torch.cat([x_j, edge_attr], dim=1)
+        agg = self.mlp1(tmp)
+        return agg
+    
+    def __repr__(self):
+        return '{}(mlp1={}, mlp2={})'.format(self.__class__.__name__, self.mlp1, self.mlp2)
+
+def MLP(channels, batch_norm=True):
+    # Ensure batch_norm is utilized as needed
+    return Seq(*[
+        Seq(Lin(channels[i - 1], channels[i]), ReLU())  # , BN(channels[i])
+        for i in range(1, len(channels))
+    ])
+
+class IGCNet(torch.nn.Module):
+    def __init__(self):
+        super(IGCNet, self).__init__()
+        self.mlp1 = MLP([3, 32, 32])
+        self.mlp2 = MLP([34, 16])
+        self.mlp2 = Seq(*[self.mlp2, Seq(Lin(16, 1), Sigmoid())])
+        self.conv = IGConv(self.mlp1, self.mlp2)
+    
+    def forward(self, data):
+        x0, edge_attr, edge_index = data.x, data.edge_attr, data.edge_index
+        x1 = self.conv(x=x0, edge_index=edge_index, edge_attr=edge_attr)
+        x2 = self.conv(x=x1, edge_index=edge_index, edge_attr=edge_attr)
+        #x3 = self.conv(x = x2, edge_index = edge_index, edge_attr = edge_attr)
+        #x4 = self.conv(x = x3, edge_index = edge_index, edge_attr = edge_attr)
+        out = self.conv(x=x2, edge_index=edge_index, edge_attr=edge_attr)
+        return out
+
+train_K = 20
+test_K = 20
+train_layouts = 2000
+test_layouts = 500
+
+train_config = init_parameters()
+var = train_config.output_noise_power / train_config.tx_power
+layouts, train_dists = wg.generate_layouts(train_config, train_layouts)
+train_path_losses = wg.compute_path_losses(train_config, train_dists)
+
+test_config = init_parameters()
+layouts, test_dists = wg.generate_layouts(test_config, test_layouts)
+test_path_losses = wg.compute_path_losses(test_config, test_dists)
+
+norm_train, norm_test = normalize_data(1/train_dists, 1/test_dists)
+
+directLink_channel_losses = helper_functions.get_directLink_channel_losses(test_path_losses)
+crossLink_channel_losses = helper_functions.get_crossLink_channel_losses(test_path_losses)
+
+Y1 = FP_optimize(test_config, test_path_losses,np.ones([test_layouts, test_K]))
+rates1 = helper_functions.compute_rates(test_config,
+            Y1, directLink_channel_losses, crossLink_channel_losses)
+sr1 = np.mean(np.sum(rates1,axis=1))
+
+Pini = np.random.rand(test_layouts, test_K, 1)
+Y2 = wf.batch_WMMSE2(Pini,np.ones([test_layouts, test_K]),np.sqrt(test_path_losses), 1, var)
+rates2 = helper_functions.compute_rates(test_config,
+            Y2, directLink_channel_losses, crossLink_channel_losses)
+sr2 = np.mean(np.sum(rates2,axis=1))
+
+print('FPLinQ:',sr1)
+print('WMMSE:', sr2)
+
+train_data_list = proc_data(train_path_losses, train_dists, norm_train, train_K, 0)
+test_data_list = proc_data(test_path_losses, test_dists, norm_test, test_K, 1)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = IGCNet().to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.9)
+
+def sr_loss(data, out, K):
+    power = out[:,1]
+    power = torch.reshape(power, (-1, K, 1))
+
+    abs_H_2 = data.y
+    abs_H_2 = abs_H_2.permute(0,2,1)
+    rx_power = torch.mul(abs_H_2, power)
+
+    mask = torch.eye(K)
+    mask = mask.to(device)
+    valid_rx_power = torch.sum(torch.mul(rx_power, mask), 1)
+    interference = torch.sum(torch.mul(rx_power, 1 - mask), 1) + var
+    rate = torch.log2(1 + torch.div(valid_rx_power, interference))
+    sum_rate = torch.mean(torch.sum(rate, 1))
+    loss = torch.neg(sum_rate)
+    return loss
+
+
+def sr_loss_revised(data, out, K, remove_perturbation_percentage=0.7):
+    power = out[:, 1].view(-1, K, 1)
+    abs_H_2 = data.y.permute(0, 2, 1)
+    rx_power = abs_H_2 * power
+    
+    mask = torch.eye(K, device=out.device)
+    valid_rx_power = (rx_power * mask).sum(dim=1)
+    interference = (rx_power * (1 - mask)).sum(dim=1) + var
+    rate = torch.log2(1 + valid_rx_power / interference)
+    
+    # Assuming you need the following computations for logging or monitoring
+    A = rate.detach().clone()
+    r, c = A.shape
+    ind = torch.argsort(A, dim=1)
+    m = int(c * remove_perturbation_percentage)
+    
+    q = A.gather(1, ind[:, -m:]).mean(dim=1)
+    p = A.gather(1, ind[:, :-m]).mean(dim=1)
+    k = (A.sum(dim=1) - p * (c - m)) / A.sum(dim=1)
+    
+    rate_mean_max = q.mean()
+    rate_mean_rest = p.mean()
+    rate_maximum_usage = k.mean()
+    
+    # Implement any logging/usage of rate_mean_max, rate_mean_rest, rate_maximum_usage here
+    
+    sum_rate = rate.sum(dim=1).mean()
+    loss = -sum_rate
+    return loss
+
+def train(model, optimizer, train_loader, train_K, train_layouts, device):
+    model.train()
+    total_loss = 0
+    for data in train_loader:
+        data = data.to(device)
+        optimizer.zero_grad()
+        out = model(data)
+        loss = sr_loss(data, out, train_K)
+        loss.backward()
+        total_loss += loss.item() * data.num_graphs
+        optimizer.step()
+    return total_loss / train_layouts
+
+def test(model, test_loader, loss_fn, test_K, test_layouts, device, log_time=False):
+    model.eval()
+    total_loss = 0
+    for data in test_loader:
+        data = data.to(device)
+        with torch.no_grad():
+            start = time.time()
+            out = model(data)
+            end = time.time()
+            if log_time:
+                print('CGCNet time', end-start)
+            loss = loss_fn(data, out, test_K)
+            print(f'loss is {loss}')
+            total_loss += loss.item() * data.num_graphs
+    return total_loss / test_layouts
+
+def test_revised(model, test_loader, loss_function, test_K, test_layouts, device):
+    model.eval()
+    total_loss = 0
+    
+    for data in test_loader:
+        data = data.to(device)
+        with torch.no_grad():
+            start_time = time.time()
+            output = model(data)
+            elapsed_time = time.time() - start_time
+            print(f'CGCNet inference time: {elapsed_time:.4f} seconds')
+            
+            loss = loss_function(data, output, test_K)
+            print(f'Loss: {loss.item():.4f}')
+            
+            total_loss += loss.item() * data.num_graphs
+            
+    average_loss = total_loss / test_layouts
+    return average_loss
+
+def simple_greedy(X, AAA, label, threshold_k):
+    n = X.shape[0]
+    thd = int(np.sum(label) / n)
+    Y = np.zeros((n, threshold_k))
+    for i in range(n):
+        alpha = AAA[i, :]
+        H_diag = alpha * np.square(np.diag(X[i, :, :]))
+        indices_to_update = np.argsort(H_diag)[::-1][:thd]
+        Y[i, indices_to_update] = 1
+    return Y
+
+train_loader = DataLoader(train_data_list, batch_size=64, shuffle=True, num_workers=1)
+test_loader = DataLoader(test_data_list, batch_size=test_layouts, shuffle=False, num_workers=1)
+
+for epoch in tqdm(range(1, 200)):
+    loss_train = train(model, optimizer, train_loader, train_K, train_layouts, device)
+    if epoch % 4 == 0:
+        loss_test = test(model, test_loader, sr_loss, test_K, test_layouts, device, log_time=False)
+        print(f'Epoch {epoch:03d}, Train Loss: {loss_train:.4f}, Test Loss: {loss_test:.4f}')
+    scheduler.step()
+
+def test_scenario(gen_tests, init_parameters_func, generate_layouts_func, compute_path_losses_func, compute_rates_func, 
+                  get_directLink_channel_losses_func, get_crossLink_channel_losses_func, FP_optimize_func, 
+                  batch_WMMSE2_func, simple_greedy_func, normalize_data_func, proc_data_func, test_revised_func, 
+                  train_dists, var, device):
+
+    density = test_config.field_length**2 / test_K
+    
+    for test_K in gen_tests:
+        test_layouts = 20
+        test_config = init_parameters_func()
+        test_config.n_links = test_K
+        
+        field_length = int(np.sqrt(density * test_K))
+        test_config.field_length = field_length
+        
+        layouts, test_dists = generate_layouts_func(test_config, test_layouts)
+        test_path_losses = compute_path_losses_func(test_config, test_dists)
+        
+        directLink_channel_losses = get_directLink_channel_losses_func(test_path_losses)
+        crossLink_channel_losses = get_crossLink_channel_losses_func(test_path_losses)
+        
+        start = time.time()
+        Y = FP_optimize_func(test_config, test_path_losses, np.ones([test_layouts, test_K]))
+        print('FP time:', time.time() - start)
+        
+        Pini = np.random.rand(test_layouts, test_K, 1)
+        start = time.time()
+        Y2 = batch_WMMSE2_func(Pini, np.ones([test_layouts, test_K]), np.sqrt(test_path_losses), 1, var)
+        print('WMMSE time:', time.time() - start)
+        
+        rates1 = compute_rates_func(test_config, Y, directLink_channel_losses, crossLink_channel_losses)
+        rates2 = compute_rates_func(test_config, Y2, directLink_channel_losses, crossLink_channel_losses)
+        sr1 = np.mean(np.sum(rates1, axis=1))
+        sr2 = np.mean(np.sum(rates2, axis=1))
+        print('FPlinQ:', sr1)
+        print('WMMSE:', sr2)
+        
+        bl_Y = simple_greedy_func(test_path_losses, np.ones([test_layouts, test_K]), Y)
+        rates_bl = compute_rates_func(test_config, bl_Y, directLink_channel_losses, crossLink_channel_losses)
+        sr_bl = np.mean(np.sum(rates_bl, axis=1))
+        print('baseline:', sr_bl)
+        
+        _, norm_test = normalize_data_func(1/train_dists, 1/test_dists)
+        test_data_list = proc_data_func(test_path_losses, test_dists, norm_test, test_K, 1)
+        test_loader = DataLoader(test_data_list, batch_size=test_layouts, shuffle=False, num_workers=1)
+        
+        loss2 = test_revised_func()
+        print('CGCNet:', loss2)
+        print('performance:', -loss2/sr2)
+
+# Ensure to have a 'main' function to encapsulate script functionality
+if __name__ == "__main__":
+    install_pytorch_geometric_dependencies()
+    mount_google_drive()
+
+    # Further explanations to be fully understood by others.
+    wg = reload(wg)  # Reloading: Explain why this is necessary.
+    FPLinQ = reload(FPLinQ)  # Reloading: Elaborate on purpose and impact.
+    helper_functions = reload(helper_functions)  # Reloading: Detail reasons and implications.
+
+    # Your main functionalities and script operations go here.
+    total_loss / train_layouts = train(model, test_loader, loss_fn, test_K, test_layouts, device)
+    total_loss / test_layouts = test(model, test_loader, loss_fn, test_K, test_layouts, device)
+
+    test_scenario(gen_tests, init_parameters_func, generate_layouts_func, compute_path_losses_func, compute_rates_func, 
+                  get_directLink_channel_losses_func, get_crossLink_channel_losses_func, FP_optimize_func, 
+                  batch_WMMSE2_func, simple_greedy_func, normalize_data_func, proc_data_func, test_revised_func, 
+                  train_dists, var, device)
+    # Be sure to provide explanations and comment on blocks of codes for clarity.

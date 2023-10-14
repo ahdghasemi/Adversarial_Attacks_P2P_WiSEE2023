@@ -22,10 +22,3 @@ The paper navigates through the complex waters of adversarial attacks on central
 3. [Results and Discussion](#Results-and-Discussion)
 4. [Conclusion](#Conclusion)
 5. [References](#References)
-
-## How to Cite
-
-To reference our paper in your work, please use the following citation:
-
-```plaintext
-[Details of your publication for citation will be added here once it is available]

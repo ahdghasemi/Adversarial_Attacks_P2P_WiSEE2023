@@ -184,11 +184,6 @@ def our_remove_attack_budget_constraint(y, remove_perturbation_percentage):
                 
     return y
 
-# The logic for other functions follows a similar pattern to the above one.
-# Hence, similar comments and structure can be applied to them.
-# Note that the detailed description of each function should be placed in the docstring,
-# giving future readers and users a guide on what the function is expected to do, its inputs, and outputs.
-
 def our_remove_attack_new_magnitude_based_perturbation(y, remove_perturbation_percentage):
     """
     Description for this function.
@@ -675,7 +670,7 @@ def test_scenario(gen_tests, init_parameters_func, generate_layouts_func, comput
         print('CGCNet:', loss2)
         print('performance:', -loss2/sr2)
 
-# Ensure to have a 'main' function to encapsulate script functionality
+# 'main' function to encapsulate script functionality
 if __name__ == "__main__":
     install_pytorch_geometric_dependencies()
     mount_google_drive()
@@ -693,4 +688,3 @@ if __name__ == "__main__":
                   get_directLink_channel_losses_func, get_crossLink_channel_losses_func, FP_optimize_func, 
                   batch_WMMSE2_func, simple_greedy_func, normalize_data_func, proc_data_func, test_revised_func, 
                   train_dists, var, device)
-    # Be sure to provide explanations and comment on blocks of codes for clarity.

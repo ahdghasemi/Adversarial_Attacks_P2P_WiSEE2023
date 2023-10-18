@@ -7,7 +7,7 @@ This paper explores adversarial attacks on a Graph Neural Network (GNN) based ra
 ## Key Contributions
 
 - **In-depth Exploration**: Comprehensive study of adversarial attacks on GNN-based radio resource management in P2P communications.
-- **Innovative Adversarial Attack**: Introduction of a pioneering adversarial attack that modifies the GNN model vertices, considerate of numerous constraints.
+- **Innovative Adversarial Attack**: Introduction of four novel adversarial attack that modifies the GNN model vertices, considerate of numerous constraints.
 - **Effectiveness Analysis**: Evaluating the proposed attack in the context of the number of users and SNR.
 - **Optimization Problems Formulation**: Developing optimization problems intended to minimize system communication quality while abiding by distinct constraints.
 

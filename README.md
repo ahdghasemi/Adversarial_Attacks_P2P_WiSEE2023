@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This paper explores adversarial attacks on a Graph Neural Network (GNN) based radio resource management in point-to-point (P2P) communications. Specifically, we examine the vulnerability of the trained GNN model, which processes information from transceiver pairs, during the test phase. A novel adversarial attack is introduced which adeptly modifies the vertices of the GNN model while adhering to various constraints. The attack’s effectiveness is measured against metrics like the number of users and the signal-to-noise ratio (SNR). Furthermore, the proposed attack articulates optimization problems with the intention of minimizing system communication quality, encapsulating specific constraints.
+This paper explores adversarial attacks on a Graph Neural Network (GNN) based radio resource management in point-to-point (P2P) communications (Our new paper! Will be uploaded soon!). Specifically, we examine the vulnerability of the trained GNN model, which processes information from transceiver pairs, during the test phase. A novel adversarial attack is introduced which adeptly modifies the vertices of the GNN model while adhering to various constraints. The attack’s effectiveness is measured against metrics like the number of users and the signal-to-noise ratio (SNR). Furthermore, the proposed attack articulates optimization problems with the intention of minimizing system communication quality, encapsulating specific constraints.
 
 ## Key Contributions
 
